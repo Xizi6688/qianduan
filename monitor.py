@@ -1,4 +1,6 @@
 import os
+import subprocess
+import time
 import requests
 import smtplib
 from email.mime.text import MIMEText
@@ -23,13 +25,21 @@ def get_ip_location(ip):
   return "未知地区"
 
 
-def check_ip(ip):
-  # 简单的 HTTP 检测，超时或异常视为不通
-  try:
-    res = requests.get(f"http://{ip}", timeout=5)
-    return res.status_code < 500
-  except:
-    return False
+def ping_ip(ip):
+  """使用系统自带的 ping 命令检测 IP，连续失败 2 次才视为真正不通，防止瞬时网络波动"""
+  fail_count = 0
+  for _ in range(2):
+    # -c 1: 发送1个包, -W 2: 超时时间2秒
+    command = ["ping", "-c", "1", "-W", "2", ip]
+    result = subprocess.run(
+        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    if result.returncode != 0:
+      fail_count += 1
+    else:
+      # 只要有一次成功，就说明通
+      return True
+  return False
 
 
 def send_email(subject, content):
@@ -46,7 +56,7 @@ def send_email(subject, content):
     print(f"邮件发送失败: {e}")
 
 
-def main():
+def run_monitor():
   headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
   # 1. 获取解析记录列表
@@ -74,10 +84,10 @@ def main():
 
     # 只检测当前启用的记录
     if status == "1":
-      is_alive = check_ip(ip)
+      is_alive = ping_ip(ip)
       if not is_alive:
         location = get_ip_location(ip)
-        print(f"IP {ip} ({location}) 异常，开始暂停...")
+        print(f"IP {ip} ({location}) Ping 不通，开始暂停...")
 
         # 2. 暂停不通的解析记录
         status_payload = {
@@ -102,6 +112,15 @@ def main():
     send_email(
         f"【告警】{SUB_DOMAIN}.{DOMAIN} 有 IP 解析异常并已暂停", body
     )
+
+
+def main():
+  # 通过循环 5 次，每次间隔 60 秒，实现单次 GitHub Actions 运行覆盖 5 分钟的“1分钟一次”监控
+  for i in range(5):
+    print(f"--- 开始第 {i+1} 次循环检测 ---")
+    run_monitor()
+    if i < 4:
+      time.sleep(60)
 
 
 if __name__ == "__main__":
