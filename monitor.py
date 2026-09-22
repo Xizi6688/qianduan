@@ -37,7 +37,7 @@ def check_tcp_port(ip, port):
     except OSError:
       pass
     time.sleep(1)
-  return False  # 两次连接都失败，判定为不通
+  return False  # 两次连接都失败，判定为不通   
 
 
 def send_email(subject, content):
