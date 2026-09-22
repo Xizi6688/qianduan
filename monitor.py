@@ -50,6 +50,7 @@ def send_email(subject, content):
     server.login(MAIL_USER, MAIL_PASS)
     server.sendmail(MAIL_USER, [MAIL_USER], msg.as_string())
     server.quit()
+    print("报警邮件发送成功")
   except Exception as e:
     print(f"邮件发送失败: {e}")
 
@@ -85,7 +86,9 @@ def run_monitor():
       is_alive = check_tcp_port(ip, CHECK_PORT)
       if not is_alive:
         location = get_ip_location(ip)
-        print(f"IP {ip}:{CHECK_PORT} ({location}) 无法连接，开始暂停...")
+        print(
+            f"IP {ip}:{CHECK_PORT} ({location}) 无法连接，正在暂停该解析记录..."
+        )
 
         # 2. 暂停不通的解析记录
         status_payload = {
@@ -105,23 +108,37 @@ def run_monitor():
             " 无法连接，已自动暂停"
         )
 
-  # 3. 发送邮件
-  if alert_messages:
+  # 3. 如果发现有不通的 IP，返回列表
+  return alert_messages
+
+
+def main():
+  all_alerts = []
+
+  # 通过循环 5 次，每次间隔 60 秒，实现单次 GitHub Actions 运行覆盖 5 分钟的“1分钟一次”监控
+  for i in range(5):
+    print(f"--- 开始第 {i+1} 次循环检测 ---")
+    alerts = run_monitor()
+    if alerts:
+      # 收集本轮检测到的异常
+      for item in alerts:
+        if item not in all_alerts:
+          all_alerts.append(item)
+
+    if i < 4:
+      time.sleep(60)
+
+  # 整个监控周期结束，如果收集到了异常 IP，合并统发送【一次】邮件
+  if all_alerts:
     body = (
-        "监控到以下 DNS 解析节点故障，已自动处理：\n\n" + "\n\n".join(alert_messages)
+        "监控到以下 DNS 解析节点故障，已自动处理：\n\n"
+        + "\n\n".join(all_alerts)
     )
     send_email(
         f"【告警】{SUB_DOMAIN}.{DOMAIN} 有 IP 解析异常并已暂停", body
     )
-
-
-def main():
-  # 通过循环 5 次，每次间隔 60 秒，实现单次 GitHub Actions 运行覆盖 5 分钟的“1分钟一次”监控
-  for i in range(5):
-    print(f"--- 开始第 {i+1} 次循环检测 ---")
-    run_monitor()
-    if i < 4:
-      time.sleep(60)
+  else:
+    print("所有 IP 节点运行正常，无需发信。")
 
 
 if __name__ == "__main__":
