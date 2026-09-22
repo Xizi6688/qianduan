@@ -1,5 +1,5 @@
 import os
-import subprocess
+import socket
 import time
 import requests
 import smtplib
@@ -13,6 +13,9 @@ SUB_DOMAIN = os.environ["SUB_DOMAIN"]
 MAIL_USER = "979827803@qq.com"
 MAIL_PASS = os.environ["MAIL_PASS"]
 
+# 指定监测的端口
+CHECK_PORT = 35001
+
 
 def get_ip_location(ip):
   try:
@@ -25,21 +28,16 @@ def get_ip_location(ip):
   return "未知地区"
 
 
-def ping_ip(ip):
-  """使用系统自带的 ping 命令检测 IP，连续失败 2 次才视为真正不通，防止瞬时网络波动"""
-  fail_count = 0
+def check_tcp_port(ip, port):
+  """通过 TCP Socket 连通性检测指定端口，连续失败 2 次才视为不通"""
   for _ in range(2):
-    # -c 1: 发送1个包, -W 2: 超时时间2秒
-    command = ["ping", "-c", "1", "-W", "2", ip]
-    result = subprocess.run(
-        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    if result.returncode != 0:
-      fail_count += 1
-    else:
-      # 只要有一次成功，就说明通
-      return True
-  return False
+    try:
+      with socket.create_connection((ip, port), timeout=3):
+        return True  # 连通成功
+    except OSError:
+      pass
+    time.sleep(1)
+  return False  # 两次连接都失败，判定为不通
 
 
 def send_email(subject, content):
@@ -84,10 +82,10 @@ def run_monitor():
 
     # 只检测当前启用的记录
     if status == "1":
-      is_alive = ping_ip(ip)
+      is_alive = check_tcp_port(ip, CHECK_PORT)
       if not is_alive:
         location = get_ip_location(ip)
-        print(f"IP {ip} ({location}) Ping 不通，开始暂停...")
+        print(f"IP {ip}:{CHECK_PORT} ({location}) 无法连接，开始暂停...")
 
         # 2. 暂停不通的解析记录
         status_payload = {
@@ -102,7 +100,10 @@ def run_monitor():
             data=status_payload,
             headers=headers,
         )
-        alert_messages.append(f"异常IP: {ip}\n归属地: {location}\n状态: 已自动暂停")
+        alert_messages.append(
+            f"异常IP: {ip}\n归属地: {location}\n状态: 端口 {CHECK_PORT}"
+            " 无法连接，已自动暂停"
+        )
 
   # 3. 发送邮件
   if alert_messages:
