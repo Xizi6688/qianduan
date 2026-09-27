@@ -89,7 +89,7 @@ def run_monitor_cycle(headers, records):
                 print(f"【异常】IP {ip} ({location}) 无法连接，正在暂停解析...")
                 set_dns_status(record_id, "disable", headers)
                 
-                # 关键修复 1：同步更新本地内存状态，防止下一轮循环重置状态
+                # 同步更新本地内存状态
                 rec["enabled"] = "0"
 
                 watching_ips[record_id] = {
@@ -97,6 +97,13 @@ def run_monitor_cycle(headers, records):
                     "location": location,
                     "retry_left": 5
                 }
+
+                # 首次检测到异常暂停时，立即添加到发送列表
+                alert_messages.append(
+                    f"异常 IP: {ip}\n"
+                    f"归属地: {location}\n"
+                    f"状态: 检测到端口全不通，已自动暂停 DNS 解析！"
+                )
             elif status == "0" and record_id in watching_ips:
                 # 已经在观察列表中，扣减次数
                 watching_ips[record_id]["retry_left"] -= 1
@@ -117,7 +124,7 @@ def run_monitor_cycle(headers, records):
                 print(f"【复活】IP {ip} ({location}) 恢复正常，重新开启解析！")
                 set_dns_status(record_id, "enable", headers)
                 
-                # 关键修复 2：同步更新本地内存状态
+                # 同步更新本地内存状态
                 rec["enabled"] = "1"
                 if record_id in watching_ips:
                     del watching_ips[record_id]
@@ -167,12 +174,12 @@ def main():
     # 3. 统一发送邮件
     if all_final_alerts:
         body = (
-            f"监控到 {SUB_DOMAIN}.{DOMAIN} 以下 DNS 解析节点故障，且经多次重试无法恢复，已做最终处理：\n\n"
+            f"监控到 {SUB_DOMAIN}.{DOMAIN} 以下 DNS 解析节点出现故障/已自动暂停处理：\n\n"
             + "\n\n----------------------------------------\n\n".join(all_final_alerts)
         )
-        send_email(f"【最终告警】{SUB_DOMAIN}.{DOMAIN} 有节点故障并已放弃", body)
+        send_email(f"【节点故障告警】{SUB_DOMAIN}.{DOMAIN} DNS 解析节点异常", body)
     else:
-        print("监控周期结束：无彻底失效节点，或已自动恢复。")
+        print("监控周期结束：无失效节点或已恢复正常。")
 
 
 if __name__ == "__main__":
