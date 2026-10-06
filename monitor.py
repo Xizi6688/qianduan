@@ -10,7 +10,7 @@ API_ID = os.environ.get("DNSPOD_ID", "")
 API_TOKEN = os.environ.get("DNSPOD_TOKEN", "")
 DOMAIN = os.environ.get("DOMAIN", "yxjiedian.top")
 
-# 指定需要监控的子域名列表
+# 指定需要监控的子域名
 TARGET_SUB_DOMAINS = ["hk4", "riben5"]
 
 MAIL_USER = "979827803@qq.com"
@@ -19,7 +19,7 @@ MAIL_PASS = os.environ.get("MAIL_PASS", "")
 # 端口检测改为仅监测 443
 CHECK_PORTS = [443]
 
-# 观察字典结构: { record_id: { "ip": ip, "location": loc, "retry_left": 5 } }
+# 观察字典结构: { record_id: { "ip": ip, "sub_name": sub_name, "location": loc, "retry_left": 5 } }
 watching_ips = {}
 
 
@@ -35,7 +35,7 @@ def get_ip_location(ip):
 
 
 def check_ip_health(ip):
-    """检测该 IP 下的所有端口，只要有一个端口通即算存活"""
+    """检测该 IP 下的端口，只要有一个端口通即算存活"""
     for port in CHECK_PORTS:
         try:
             with socket.create_connection((ip, port), timeout=3):
@@ -148,30 +148,34 @@ def run_monitor_cycle(headers, records):
 
 def main():
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    records = []
 
-    # 1. 分别获取 hk4 和 riben5 的解析记录
-    for sub in TARGET_SUB_DOMAINS:
-        list_payload = {
-            "login_token": f"{API_ID},{API_TOKEN}",
-            "format": "json",
-            "domain": DOMAIN,
-            "sub_domain": sub,
-        }
-        try:
-            res = requests.post("https://dnsapi.cn/Record.List", data=list_payload, headers=headers).json()
-            if res.get("status", {}).get("code") == "1":
-                records.extend(res.get("records", []))
-            else:
-                print(f"获取子域名 {sub}.{DOMAIN} 记录失败: {res.get('status', {}).get('message')}")
-        except Exception as e:
-            print(f"请求 DNSPod API 异常 ({sub}): {e}")
-
-    if not records:
-        print("【错误】未找到任何有效的解析记录（实时列表为空），监控终止。")
+    # 1. 直接获取该域名下的所有记录，避免 API 对 sub_domain 的严格过滤导致空列表
+    list_payload = {
+        "login_token": f"{API_ID},{API_TOKEN}",
+        "format": "json",
+        "domain": DOMAIN,
+    }
+    try:
+        res = requests.post("https://dnsapi.cn/Record.List", data=list_payload, headers=headers).json()
+        if res.get("status", {}).get("code") != "1":
+            print(f"获取 DNS 记录失败: {res.get('status', {}).get('message')}")
+            return
+        
+        all_records = res.get("records", [])
+        # 筛选出名字在 TARGET_SUB_DOMAINS 列表中的记录
+        records = [rec for rec in all_records if rec.get("name") in TARGET_SUB_DOMAINS]
+    except Exception as e:
+        print(f"请求 DNSPod API 异常: {e}")
         return
 
-    print(f"成功获取到 {len(records)} 条解析记录，开始监控...")
+    if not records:
+        print(f"【错误】在域名 {DOMAIN} 下未找到指定的子域名记录 {TARGET_SUB_DOMAINS}，监控终止。")
+        return
+
+    print(f"成功匹配到 {len(records)} 条指定解析记录，开始监控...")
+    for r in records:
+        print(f" -> 监控目标: {r.get('name')}.{DOMAIN} -> IP: {r.get('value')}")
+
     all_final_alerts = []
 
     # 2. 循环检测 5 次
