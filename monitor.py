@@ -83,7 +83,7 @@ def run_monitor_cycle(headers, records):
         record_id = rec["id"]
         ip = rec["value"]
         status = rec["enabled"]  # '1' 开启，'0' 暂停
-        sub_domain_name = rec["name"]
+        sub_domain_name = rec.get("name") or rec.get("sub_domain", "")
 
         is_alive = check_ip_health(ip)
 
@@ -149,7 +149,6 @@ def run_monitor_cycle(headers, records):
 def main():
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    # 1. 直接获取该域名下的所有记录，避免 API 对 sub_domain 的严格过滤导致空列表
     list_payload = {
         "login_token": f"{API_ID},{API_TOKEN}",
         "format": "json",
@@ -162,8 +161,20 @@ def main():
             return
         
         all_records = res.get("records", [])
-        # 筛选出名字在 TARGET_SUB_DOMAINS 列表中的记录
-        records = [rec for rec in all_records if rec.get("name") in TARGET_SUB_DOMAINS]
+        
+        # 打印当前域名下获取到的所有记录，方便排查名称
+        print(f"DEBUG: 接口返回的所有原始解析记录列表：")
+        for r in all_records:
+            name_val = r.get("name") or r.get("sub_domain", "")
+            print(f" - 记录名称(name/sub_domain): '{name_val}', ID: {r.get('id')}, IP: {r.get('value')}")
+
+        # 筛选：兼容大小写及去除空格匹配
+        records = []
+        for rec in all_records:
+            rec_name = (rec.get("name") or rec.get("sub_domain", "")).strip().lower()
+            if rec_name in [target.lower() for target in TARGET_SUB_DOMAINS]:
+                records.append(rec)
+
     except Exception as e:
         print(f"请求 DNSPod API 异常: {e}")
         return
@@ -174,7 +185,8 @@ def main():
 
     print(f"成功匹配到 {len(records)} 条指定解析记录，开始监控...")
     for r in records:
-        print(f" -> 监控目标: {r.get('name')}.{DOMAIN} -> IP: {r.get('value')}")
+        s_name = r.get("name") or r.get("sub_domain", "")
+        print(f" -> 监控目标: {s_name}.{DOMAIN} -> IP: {r.get('value')}")
 
     all_final_alerts = []
 
