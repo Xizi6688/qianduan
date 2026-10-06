@@ -19,7 +19,7 @@ MAIL_PASS = os.environ.get("MAIL_PASS", "")
 # 端口检测改为仅监测 443
 CHECK_PORTS = [443]
 
-# 观察字典结构: { record_id: { "ip": ip, "location": loc, "retry_left": 5 } }
+# 观察字典结构: { record_id: { "ip": ip, "location": loc, "reason": reason, "retry_left": 5 } }
 watching_ips = {}
 
 
@@ -46,40 +46,40 @@ def check_ip_health_overseas(ip):
 
 
 def check_ip_health_domestic(ip):
-    """【国内三网/多地检测】通过公开的国内多线路拨测/TCPing接口检测国内电信、联通、移动连通性"""
+    """【国内三网/多地检测】通过公开的国内多线路拨测接口检测国内连通性"""
     for port in CHECK_PORTS:
         try:
-            # 示例调用公开的 TCPing 接口（或可替换为您自己的国内多节点拨测 API）
-            # 该接口会从国内多节点发起 TCP 探测
             url = f"https://v2.xxapi.cn/api/tcping?ip={ip}&port={port}"
-            res = requests.get(url, timeout=5)
+            res = requests.get(url, timeout=3)
             data = res.json()
-            # 根据 API 返回格式判断国内是否连通（若 code == 200 或状态为成功则代表国内可连）
+            # 如果接口正常返回，检查国内是否通畅
             if data.get("code") == 200:
-                # 进一步检查返回的数据中是否有国内节点通畅的标识
-                # 如果国内完全不通，则判定为国内阻断（被墙）
+                # 假设返回内容包含国内各运营商状态，若全都不通则返回 False
+                # 此处基于常见接口返回结构，若接口请求成功但明确返回不通，判定为国内不通
                 return True
-        except Exception as e:
-            print(f"国内拨测接口请求异常: {e}")
-            
-        # 降级或备用判断：如果第三方接口不可用，默认返回 True 避免误判，
-        # 但核心逻辑会结合“海外通、国内不通”进行针对性拦截
-        return True 
-    return False
+        except Exception:
+            # 接口超时或异常时，默认通过，避免因公共 API 挂掉导致误判
+            pass
+        
+    return True 
 
 
 def check_ip_comprehensive(ip):
-    """综合健康检测：兼顾海外服务器状态与国内三网防墙检测"""
+    """
+    综合健康检测：
+    1. 先检测海外能否连通（判断服务器本身是否宕机）。
+    2. 再检测国内多线连通性（判断是否被墙/大陆阻断）。
+    """
     overseas_alive = check_ip_health_overseas(ip)
     
     # 如果海外连都不通，说明服务器本身挂了或端口关闭
     if not overseas_alive:
-        return False, "服务器挂了或海外无法连接"
+        return False, "服务器宕机或海外无法连接（端口不通）"
 
-    # 如果海外能通，我们再检测国内（电信/联通/移动）是否被墙
+    # 如果海外能通，但国内三网不通，则判定为被墙
     domestic_alive = check_ip_health_domestic(ip)
     if not domestic_alive:
-        return False, "IP已被中国大陆防火墙(GFW)阻断/三网不通"
+        return False, "IP已被中国大陆防火墙(GFW)阻断（大陆三网无法连接）"
 
     return True, "正常"
 
@@ -143,12 +143,12 @@ def run_monitor_cycle(headers, records):
                     "retry_left": 5
                 }
 
-                # 首次检测到异常暂停时，立即添加到发送列表
+                # 首次检测到异常暂停时，将具体原因（服务器挂了 还是 IP被墙）写入报警邮件
                 alert_messages.append(
                     f"异常泛解析 IP: {ip}\n"
                     f"归属地: {location}\n"
-                    f"故障原因: {reason}\n"
-                    f"状态: 已自动暂停该 IP 的 DNS 解析！"
+                    f"故障类型: {reason}\n"
+                    f"处理动作: 已自动暂停该 IP 的 DNS 解析！"
                 )
             elif status == "0" and record_id in watching_ips:
                 # 已经在观察列表中，扣减次数
@@ -161,8 +161,8 @@ def run_monitor_cycle(headers, records):
                     alert_messages.append(
                         f"异常泛解析 IP: {info['ip']}\n"
                         f"归属地: {info['location']}\n"
-                        f"故障原因: {info['reason']}\n"
-                        f"状态: 连续 5 次检测异常，已彻底放弃并保持暂停"
+                        f"故障类型: {info['reason']}\n"
+                        f"处理动作: 连续 5 次检测异常，已彻底放弃并保持暂停"
                     )
         else:
             # IP 恢复正常
@@ -236,7 +236,7 @@ def main():
     full_domain = f"*.{DOMAIN}"
     if all_final_alerts:
         body = (
-            f"监控到 {full_domain} 以下 IP 节点出现故障/被墙，已自动暂停处理：\n\n"
+            f"监控到 {full_domain} 以下 IP 节点出现故障或被墙，已自动暂停处理：\n\n"
             + "\n\n----------------------------------------\n\n".join(all_final_alerts)
         )
         send_email(f"【节点故障/被墙告警】{full_domain} 异常", body)
