@@ -10,8 +10,8 @@ API_ID = os.environ.get("DNSPOD_ID", "")
 API_TOKEN = os.environ.get("DNSPOD_TOKEN", "")
 DOMAIN = os.environ.get("DOMAIN", "yxjiedian.top")
 
-# 指定需要监控的子域名
-TARGET_SUB_DOMAINS = ["hk4", "riben5"]
+# 因为使用的是泛解析，这里监控主机记录为 "*" 的所有记录
+TARGET_SUB_DOMAINS = ["*"]
 
 MAIL_USER = "979827803@qq.com"
 MAIL_PASS = os.environ.get("MAIL_PASS", "")
@@ -19,7 +19,7 @@ MAIL_PASS = os.environ.get("MAIL_PASS", "")
 # 端口检测改为仅监测 443
 CHECK_PORTS = [443]
 
-# 观察字典结构: { record_id: { "ip": ip, "sub_name": sub_name, "location": loc, "retry_left": 5 } }
+# 观察字典结构: { record_id: { "ip": ip, "location": loc, "retry_left": 5 } }
 watching_ips = {}
 
 
@@ -83,7 +83,7 @@ def run_monitor_cycle(headers, records):
         record_id = rec["id"]
         ip = rec["value"]
         status = rec["enabled"]  # '1' 开启，'0' 暂停
-        sub_domain_name = rec.get("name") or rec.get("sub_domain", "")
+        sub_domain_name = rec.get("name") or rec.get("sub_domain", "*")
 
         is_alive = check_ip_health(ip)
 
@@ -91,7 +91,7 @@ def run_monitor_cycle(headers, records):
             if status == "1":
                 # 原本开启，现在不通 -> 立即暂停并加入观察列表
                 location = get_ip_location(ip)
-                print(f"【异常】节点 {sub_domain_name}.{DOMAIN} (IP: {ip}, 归属地: {location}) 无法连接，正在暂停解析...")
+                print(f"【异常】泛解析节点 ({sub_domain_name}) IP: {ip} (归属地: {location}) 无法连接，正在暂停该条解析...")
                 set_dns_status(record_id, "disable", headers)
                 
                 # 同步更新本地内存状态
@@ -99,30 +99,26 @@ def run_monitor_cycle(headers, records):
 
                 watching_ips[record_id] = {
                     "ip": ip,
-                    "sub_name": sub_domain_name,
                     "location": location,
                     "retry_left": 5
                 }
 
                 # 首次检测到异常暂停时，立即添加到发送列表
                 alert_messages.append(
-                    f"异常节点: {sub_domain_name}.{DOMAIN}\n"
-                    f"IP 地址: {ip}\n"
+                    f"异常泛解析 IP: {ip}\n"
                     f"归属地: {location}\n"
-                    f"状态: 检测到 443 端口不通，已自动暂停 DNS 解析！"
+                    f"状态: 检测到 443 端口不通，已自动暂停该 IP 的解析！"
                 )
             elif status == "0" and record_id in watching_ips:
                 # 已经在观察列表中，扣减次数
                 watching_ips[record_id]["retry_left"] -= 1
                 left = watching_ips[record_id]["retry_left"]
-                sub_name = watching_ips[record_id]["sub_name"]
-                print(f"【观察中】节点 {sub_name}.{DOMAIN} (IP: {ip}) 依然不通，剩余观察次数: {left}")
+                print(f"【观察中】泛解析 IP {ip} 依然不通，剩余观察次数: {left}")
 
                 if left <= 0:
                     info = watching_ips[record_id]
                     alert_messages.append(
-                        f"异常节点: {info['sub_name']}.{DOMAIN}\n"
-                        f"IP 地址: {info['ip']}\n"
+                        f"异常泛解析 IP: {info['ip']}\n"
                         f"归属地: {info['location']}\n"
                         f"状态: 连续 5 次检测无法连通，已彻底放弃并保持暂停"
                     )
@@ -130,7 +126,7 @@ def run_monitor_cycle(headers, records):
             # IP 恢复正常
             if record_id in watching_ips or status == "0":
                 location = get_ip_location(ip)
-                print(f"【复活】节点 {sub_domain_name}.{DOMAIN} (IP: {ip}, 归属地: {location}) 恢复正常，重新开启解析！")
+                print(f"【复活】泛解析 IP {ip} ({location}) 恢复正常，重新开启解析！")
                 set_dns_status(record_id, "enable", headers)
                 
                 # 同步更新本地内存状态
@@ -162,17 +158,12 @@ def main():
         
         all_records = res.get("records", [])
         
-        # 打印当前域名下获取到的所有记录，方便排查名称
-        print(f"DEBUG: 接口返回的所有原始解析记录列表：")
-        for r in all_records:
-            name_val = r.get("name") or r.get("sub_domain", "")
-            print(f" - 记录名称(name/sub_domain): '{name_val}', ID: {r.get('id')}, IP: {r.get('value')}")
-
-        # 筛选：兼容大小写及去除空格匹配
+        # 筛选出主机记录为 "*" 的所有 A 记录
         records = []
         for rec in all_records:
-            rec_name = (rec.get("name") or rec.get("sub_domain", "")).strip().lower()
-            if rec_name in [target.lower() for target in TARGET_SUB_DOMAINS]:
+            rec_name = (rec.get("name") or rec.get("sub_domain", "")).strip()
+            # 必须是 "*" 且类型为 A 记录
+            if rec_name == "*" and rec.get("type", "A") == "A":
                 records.append(rec)
 
     except Exception as e:
@@ -180,13 +171,12 @@ def main():
         return
 
     if not records:
-        print(f"【错误】在域名 {DOMAIN} 下未找到指定的子域名记录 {TARGET_SUB_DOMAINS}，监控终止。")
+        print(f"【错误】在域名 {DOMAIN} 下未找到任何主机记录为 '*' 的解析记录，监控终止。")
         return
 
-    print(f"成功匹配到 {len(records)} 条指定解析记录，开始监控...")
+    print(f"成功匹配到 {len(records)} 条泛解析 IP 记录，开始监控...")
     for r in records:
-        s_name = r.get("name") or r.get("sub_domain", "")
-        print(f" -> 监控目标: {s_name}.{DOMAIN} -> IP: {r.get('value')}")
+        print( -> 监控 IP: {r.get('value')} (ID: {r.get('id')})")
 
     all_final_alerts = []
 
@@ -202,12 +192,13 @@ def main():
             time.sleep(60)
 
     # 3. 统一发送邮件
+    full_domain = f"*.{DOMAIN}"
     if all_final_alerts:
         body = (
-            f"监控到 {DOMAIN} 以下指定节点出现故障/已自动暂停处理：\n\n"
+            f"监控到 {full_domain} 以下 IP 节点出现故障/已自动暂停处理：\n\n"
             + "\n\n----------------------------------------\n\n".join(all_final_alerts)
         )
-        send_email(f"【节点故障告警】{DOMAIN} 指定节点异常", body)
+        send_email(f"【节点故障告警】{full_domain} 泛解析节点异常", body)
     else:
         print("监控周期结束：无失效节点或已恢复正常。")
 
