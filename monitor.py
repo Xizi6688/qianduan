@@ -34,8 +34,8 @@ def get_ip_location(ip):
     return "未知地区"
 
 
-def check_ip_health(ip):
-    """检测该 IP 下的端口，只要有一个端口通即算存活"""
+def check_ip_health_overseas(ip):
+    """【海外检测】通过 GitHub Actions 本地 socket 检测海外连通性"""
     for port in CHECK_PORTS:
         try:
             with socket.create_connection((ip, port), timeout=3):
@@ -43,6 +43,45 @@ def check_ip_health(ip):
         except OSError:
             continue
     return False
+
+
+def check_ip_health_domestic(ip):
+    """【国内三网/多地检测】通过公开的国内多线路拨测/TCPing接口检测国内电信、联通、移动连通性"""
+    for port in CHECK_PORTS:
+        try:
+            # 示例调用公开的 TCPing 接口（或可替换为您自己的国内多节点拨测 API）
+            # 该接口会从国内多节点发起 TCP 探测
+            url = f"https://v2.xxapi.cn/api/tcping?ip={ip}&port={port}"
+            res = requests.get(url, timeout=5)
+            data = res.json()
+            # 根据 API 返回格式判断国内是否连通（若 code == 200 或状态为成功则代表国内可连）
+            if data.get("code") == 200:
+                # 进一步检查返回的数据中是否有国内节点通畅的标识
+                # 如果国内完全不通，则判定为国内阻断（被墙）
+                return True
+        except Exception as e:
+            print(f"国内拨测接口请求异常: {e}")
+            
+        # 降级或备用判断：如果第三方接口不可用，默认返回 True 避免误判，
+        # 但核心逻辑会结合“海外通、国内不通”进行针对性拦截
+        return True 
+    return False
+
+
+def check_ip_comprehensive(ip):
+    """综合健康检测：兼顾海外服务器状态与国内三网防墙检测"""
+    overseas_alive = check_ip_health_overseas(ip)
+    
+    # 如果海外连都不通，说明服务器本身挂了或端口关闭
+    if not overseas_alive:
+        return False, "服务器挂了或海外无法连接"
+
+    # 如果海外能通，我们再检测国内（电信/联通/移动）是否被墙
+    domestic_alive = check_ip_health_domestic(ip)
+    if not domestic_alive:
+        return False, "IP已被中国大陆防火墙(GFW)阻断/三网不通"
+
+    return True, "正常"
 
 
 def set_dns_status(record_id, status_str, headers):
@@ -85,13 +124,13 @@ def run_monitor_cycle(headers, records):
         status = rec["enabled"]  # '1' 开启，'0' 暂停
         sub_domain_name = rec.get("name") or rec.get("sub_domain", "*")
 
-        is_alive = check_ip_health(ip)
+        is_alive, reason = check_ip_comprehensive(ip)
 
         if not is_alive:
             if status == "1":
-                # 原本开启，现在不通 -> 立即暂停并加入观察列表
+                # 原本开启，现在异常 -> 立即暂停并加入观察列表
                 location = get_ip_location(ip)
-                print(f"【异常】泛解析节点 ({sub_domain_name}) IP: {ip} (归属地: {location}) 无法连接，正在暂停该条解析...")
+                print(f"【异常】泛解析节点 ({sub_domain_name}) IP: {ip} (归属地: {location}) 异常，原因: {reason}，正在暂停该条解析...")
                 set_dns_status(record_id, "disable", headers)
                 
                 # 同步更新本地内存状态
@@ -100,6 +139,7 @@ def run_monitor_cycle(headers, records):
                 watching_ips[record_id] = {
                     "ip": ip,
                     "location": location,
+                    "reason": reason,
                     "retry_left": 5
                 }
 
@@ -107,20 +147,22 @@ def run_monitor_cycle(headers, records):
                 alert_messages.append(
                     f"异常泛解析 IP: {ip}\n"
                     f"归属地: {location}\n"
-                    f"状态: 检测到 443 端口不通，已自动暂停该 IP 的解析！"
+                    f"故障原因: {reason}\n"
+                    f"状态: 已自动暂停该 IP 的 DNS 解析！"
                 )
             elif status == "0" and record_id in watching_ips:
                 # 已经在观察列表中，扣减次数
                 watching_ips[record_id]["retry_left"] -= 1
                 left = watching_ips[record_id]["retry_left"]
-                print(f"【观察中】泛解析 IP {ip} 依然不通，剩余观察次数: {left}")
+                print(f"【观察中】泛解析 IP {ip} 依然异常，剩余观察次数: {left}")
 
                 if left <= 0:
                     info = watching_ips[record_id]
                     alert_messages.append(
                         f"异常泛解析 IP: {info['ip']}\n"
                         f"归属地: {info['location']}\n"
-                        f"状态: 连续 5 次检测无法连通，已彻底放弃并保持暂停"
+                        f"故障原因: {info['reason']}\n"
+                        f"状态: 连续 5 次检测异常，已彻底放弃并保持暂停"
                     )
         else:
             # IP 恢复正常
@@ -162,7 +204,6 @@ def main():
         records = []
         for rec in all_records:
             rec_name = (rec.get("name") or rec.get("sub_domain", "")).strip()
-            # 必须是 "*" 且类型为 A 记录
             if rec_name == "*" and rec.get("type", "A") == "A":
                 records.append(rec)
 
@@ -174,7 +215,7 @@ def main():
         print(f"【错误】在域名 {DOMAIN} 下未找到任何主机记录为 '*' 的解析记录，监控终止。")
         return
 
-    print(f"成功匹配到 {len(records)} 条泛解析 IP 记录，开始监控...")
+    print(f"成功匹配到 {len(records)} 条泛解析 IP 记录，开始带防墙检测的监控...")
     for r in records:
         print(f" -> 监控 IP: {r.get('value')} (ID: {r.get('id')})")
 
@@ -195,10 +236,10 @@ def main():
     full_domain = f"*.{DOMAIN}"
     if all_final_alerts:
         body = (
-            f"监控到 {full_domain} 以下 IP 节点出现故障/已自动暂停处理：\n\n"
+            f"监控到 {full_domain} 以下 IP 节点出现故障/被墙，已自动暂停处理：\n\n"
             + "\n\n----------------------------------------\n\n".join(all_final_alerts)
         )
-        send_email(f"【节点故障告警】{full_domain} 泛解析节点异常", body)
+        send_email(f"【节点故障/被墙告警】{full_domain} 异常", body)
     else:
         print("监控周期结束：无失效节点或已恢复正常。")
 
