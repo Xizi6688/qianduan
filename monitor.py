@@ -176,7 +176,7 @@ def main():
 
     print(f"成功匹配到 {len(records)} 条泛解析 IP 记录，开始监控...")
     for r in records:
-        print( -> 监控 IP: {r.get('value')} (ID: {r.get('id')})")
+        print(f" -> 监控 IP: {r.get('value')} (ID: {r.get('id')})")
 
     all_final_alerts = []
 
