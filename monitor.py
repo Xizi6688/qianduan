@@ -5,15 +5,17 @@ import requests
 import smtplib
 from email.mime.text import MIMEText
 
-# 从 GitHub Secrets 读取配置
+# 从 GitHub Secrets 读取配置，提供默认值
 API_ID = os.environ.get("DNSPOD_ID", "")
 API_TOKEN = os.environ.get("DNSPOD_TOKEN", "")
-DOMAIN = os.environ.get("DOMAIN", "")
-SUB_DOMAIN = os.environ.get("SUB_DOMAIN", "")
+DOMAIN = os.environ.get("DOMAIN", "yxjiedian.top")
+# 泛解析 *.yxjiedian.top 在 DNSPod 中对应的 sub_domain 为 "*"
+SUB_DOMAIN = os.environ.get("SUB_DOMAIN", "*")
 MAIL_USER = "979827803@qq.com"
 MAIL_PASS = os.environ.get("MAIL_PASS", "")
 
-CHECK_PORTS = [35001, 57464, 26500, 48003]
+# 端口检测改为仅监测 443
+CHECK_PORTS = [443]
 
 # 观察字典结构: { record_id: { "ip": ip, "location": loc, "retry_left": 5 } }
 watching_ips = {}
@@ -31,7 +33,7 @@ def get_ip_location(ip):
 
 
 def check_ip_health(ip):
-    """检测该 IP 下的所有端口，只要有一个端口通即算存活（也可改为全通才算存活）"""
+    """检测该 IP 下的所有端口，只要有一个端口通即算存活"""
     for port in CHECK_PORTS:
         try:
             with socket.create_connection((ip, port), timeout=3):
@@ -172,12 +174,13 @@ def main():
             time.sleep(60)
 
     # 3. 统一发送邮件
+    full_domain = f"{SUB_DOMAIN}.{DOMAIN}"
     if all_final_alerts:
         body = (
-            f"监控到 {SUB_DOMAIN}.{DOMAIN} 以下 DNS 解析节点出现故障/已自动暂停处理：\n\n"
+            f"监控到 {full_domain} 以下 DNS 解析节点出现故障/已自动暂停处理：\n\n"
             + "\n\n----------------------------------------\n\n".join(all_final_alerts)
         )
-        send_email(f"【节点故障告警】{SUB_DOMAIN}.{DOMAIN} DNS 解析节点异常", body)
+        send_email(f"【节点故障告警】{full_domain} DNS 解析节点异常", body)
     else:
         print("监控周期结束：无失效节点或已恢复正常。")
 
