@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 # 从 GitHub Secrets 读取配置，提供默认值
 API_ID = os.environ.get("DNSPOD_ID", "")
 API_TOKEN = os.environ.get("DNSPOD_TOKEN", "")
-DOMAIN = os.environ.get("DOMAIN", "yxjiedian.top")
+DOMAIN = os.environ.get("DOMAIN", "14725888.com")
 
 # 因为使用的是泛解析，这里监控主机记录为 "*" 的所有记录
 TARGET_SUB_DOMAINS = ["*"]
